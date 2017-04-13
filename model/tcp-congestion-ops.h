@@ -194,6 +194,8 @@ public:
 
 protected:
   virtual uint32_t SlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
+  //virtual uint32_t CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
+  virtual uint32_t LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
   virtual void CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
   
   
@@ -202,20 +204,21 @@ protected:
 private:
   double m_senderBandwidth;
   double m_bottleneckBandwidth;
+  double m_dispersion;
   Time m_sampleRtt1;
   Time m_sampleRtt2;
   Time m_minRtt1;
   Time m_minRtt2;
   Time m_candidateRtt1;
   Time m_candidateRtt2;
-  SequenceNumber32 m_one;
-  SequenceNumber32 m_two;
-  int m_cWndInPackets;
-  int m_lock1;
-  int m_lock2;
-  int m_minCalculated;
+  SequenceNumber32 m_sample1;
+  SequenceNumber32 m_sample2;
   int m_firstPacketPair;
   int m_cWndInSegments;
+  int m_minCalculated;
+  int m_firstSample1;
+  int m_firstSample2;
+  int m_maxSsThresh;
   
   
 };

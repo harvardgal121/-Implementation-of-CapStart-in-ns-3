@@ -66,16 +66,16 @@ TcpNewReno::GetTypeId (void)
 }
 
 TcpNewReno::TcpNewReno (void) : TcpCongestionOps (),
-m_one(0),
-m_two(0)
+	m_minCalculated(1), 
+	m_maxSsThresh(100)
 {
   NS_LOG_FUNCTION (this);
 }
 
 TcpNewReno::TcpNewReno (const TcpNewReno& sock)
   : TcpCongestionOps (sock),
-  m_one(sock.m_one),
-  m_two(sock.m_two)
+  m_maxSsThresh (sock.m_maxSsThresh)
+
 {
   NS_LOG_FUNCTION (this);
 }
@@ -141,36 +141,122 @@ TcpNewReno::SlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
   return 0;
 }
 
+uint32_t
+TcpNewReno::LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
+
+  if (segmentsAcked >= 1)
+    {
+      int k;
+      k = (int)(tcb->m_cWnd/(double)(0.5*m_maxSsThresh*tcb->m_segmentSize));
+      tcb->m_cWnd += (int)(tcb->m_segmentSize/k);
+      NS_LOG_INFO ("In LimitedSlowStart, updated to cwnd " << tcb->m_cWnd << " ssthresh " << tcb->m_ssThresh);
+      return segmentsAcked - 1;
+    }
+
+  return 0;
+}
+
 void
 TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
                      const Time& rtt)
 {
+	NS_LOG_FUNCTION (this << tcb << segmentsAcked << rtt);
 	m_cWndInSegments = tcb->GetCwndInSegments ();
+	m_firstSample1 = 0;
+	m_firstSample2 = 0;
 
 	if(m_cWndInSegments == 2 || m_cWndInSegments == 4 || m_cWndInSegments == 8 || m_cWndInSegments == 16 || m_cWndInSegments == 32 || m_cWndInSegments == 64)
 	{
-		m_one = SequenceNumber32 (tcb->m_nextTxSequence);
+		m_sample1 = SequenceNumber32 (tcb->m_nextTxSequence);
+		if(m_cWndInSegments == 2)
+		{
+			m_firstSample1 = 1;
+			
+		}
+
 		
 	}
 
 	else if(m_cWndInSegments == 3 || m_cWndInSegments == 5 || m_cWndInSegments == 9 || m_cWndInSegments == 17 || m_cWndInSegments == 33 || m_cWndInSegments == 65)
 	{
-		m_two = SequenceNumber32(tcb->m_nextTxSequence);
+		m_sample2 = SequenceNumber32(tcb->m_nextTxSequence);
+		if(m_cWndInSegments == 3)
+		{
+			m_firstSample2 = 1;
+			m_minCalculated = 1;
+		}
 		m_minCalculated = 0;
 	}
+	
 
-	else if(tcb->m_lastAckedSeq == m_one)
+	else if(tcb->m_lastAckedSeq == m_sample1)
 	{
 		m_sampleRtt1 = rtt;
+		
+		if(m_firstSample1 == 1)
+		{
+			m_minRtt1 = m_sampleRtt1;
+			m_candidateRtt1 = m_sampleRtt1;
+		}
 	}
 
-	else if(tcb->m_lastAckedSeq == m_two)
+	else if(tcb->m_lastAckedSeq == m_sample2)
 	{
 		m_sampleRtt2 = rtt;
+		
+		if(m_firstSample2 == 1)
+		{
+			m_minRtt2 = m_sampleRtt2;
+			m_candidateRtt2 = m_sampleRtt2;
+		}
+	}
+	
+
+	
+	else if(m_minCalculated == 0) //Finding the best sample set so far.
+	{
+		m_minCalculated = 1;
+		if(m_sampleRtt1 <= m_minRtt1)
+		{
+			if(m_sampleRtt1 == m_minRtt1)
+			{
+				if(m_sampleRtt2 < m_minRtt2)
+				{
+					m_candidateRtt2 = m_sampleRtt2;
+					m_minRtt2 = m_sampleRtt2;
+				}
+			}
+			else //(m_sampleRtt1 < m_minRtt1)
+			{
+				m_candidateRtt1 = m_sampleRtt1;
+				m_candidateRtt2 = m_sampleRtt2;
+				m_minRtt1 = m_sampleRtt1;
+
+				if(m_sampleRtt2 < m_minRtt2)
+				{
+					m_minRtt2 = m_sampleRtt2;
+				}
+			}
+		}
+		else //(m_sampleRtt1 > m_minRtt1)
+		{
+			if(m_sampleRtt2 < m_minRtt2)
+			{
+				m_minRtt2 = m_sampleRtt2;
+			}
+		}
+	}
+	
+	else if(m_cWndInSegments == 90)
+	{
+		m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
+		m_bottleneckBandwidth = tcb->m_segmentSize/m_dispersion;
 	}
 	
 	
-	NS_LOG_LOGIC (m_one << m_two);
+	NS_LOG_LOGIC (m_sample1 << m_sample2);
 }
 
 /**
@@ -206,20 +292,26 @@ TcpNewReno::CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked
  * \param tcb internal congestion state
  * \param segmentsAcked count of segments acked
  */
+
 void
 TcpNewReno::IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 {
   NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-  if (tcb->m_cWnd < tcb->m_ssThresh)
+  if (tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize )
     {
       segmentsAcked = SlowStart (tcb, segmentsAcked);
+    }
+  if (m_maxSsThresh*tcb->m_segmentSize < tcb->m_cWnd && tcb->m_cWnd <= tcb->m_ssThresh)
+    {
+      segmentsAcked = LimitedSlowStart (tcb, segmentsAcked);
     }
 
   if (tcb->m_cWnd >= tcb->m_ssThresh)
     {
       CongestionAvoidance (tcb, segmentsAcked);
-    }
+    }  
+
 
   /* At this point, we could have segmentsAcked != 0. This because RFC says
    * that in slow start, we should increase cWnd by min (N, SMSS); if in
@@ -230,6 +322,8 @@ TcpNewReno::IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
    * NS_ASSERT (segmentsAcked == 0);
    */
 }
+
+
 
 std::string
 TcpNewReno::GetName () const
