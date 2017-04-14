@@ -194,7 +194,7 @@ public:
 
 protected:
   virtual uint32_t SlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  //virtual uint32_t CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
+  virtual uint32_t CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
   virtual uint32_t LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
   virtual void CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
   

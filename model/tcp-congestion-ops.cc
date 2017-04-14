@@ -66,8 +66,10 @@ TcpNewReno::GetTypeId (void)
 }
 
 TcpNewReno::TcpNewReno (void) : TcpCongestionOps (),
+	m_senderBandwidth(500),
 	m_minCalculated(1), 
 	m_maxSsThresh(100)
+	
 {
   NS_LOG_FUNCTION (this);
 }
@@ -153,6 +155,36 @@ TcpNewReno::LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
       tcb->m_cWnd += (int)(tcb->m_segmentSize/k);
       NS_LOG_INFO ("In LimitedSlowStart, updated to cwnd " << tcb->m_cWnd << " ssthresh " << tcb->m_ssThresh);
       return segmentsAcked - 1;
+    }
+
+  return 0;
+}
+
+uint32_t
+TcpNewReno::CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
+
+  if (segmentsAcked >= 1)
+    {
+      m_cWndInSegments = tcb->GetCwndInSegments ();
+      if(m_cWndInSegments < 100)
+      {
+	     return SlowStart(tcb, segmentsAcked);
+	  }
+	  else
+	  {
+		//return LimitedSlowStart(tcb, segmentsAcked);
+		if(m_bottleneckBandwidth > 0.1*m_senderBandwidth) //Capacity exapnsion scenario
+		{
+			return SlowStart(tcb, segmentsAcked);
+		}
+		
+		else //(m_bottleneckBandwidth < 0.1*senderBandwidth) //Capacity reduction scenario
+		{
+			return LimitedSlowStart(tcb, segmentsAcked);
+		}
+	  }
     }
 
   return 0;
@@ -252,7 +284,7 @@ TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
 	else if(m_cWndInSegments == 90)
 	{
 		m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
-		m_bottleneckBandwidth = tcb->m_segmentSize/m_dispersion;
+		m_bottleneckBandwidth = tcb->m_segmentSize/m_dispersion; //in bytes/s
 	}
 	
 	
