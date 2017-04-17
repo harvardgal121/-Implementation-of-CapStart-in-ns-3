@@ -61,14 +61,22 @@ TcpNewReno::GetTypeId (void)
     .SetParent<TcpCongestionOps> ()
     .SetGroupName ("Internet")
     .AddConstructor<TcpNewReno> ()
+    .AddAttribute ("DataRate", 
+                   "The sender bandwidth",
+                   DataRateValue (DataRate ("5Mbps")),
+                   MakeDataRateAccessor (&TcpNewReno::m_senderBandwidth),
+                   MakeDataRateChecker ())
   ;
   return tid;
 }
 
 TcpNewReno::TcpNewReno (void) : TcpCongestionOps (),
-	m_senderBandwidth(500),
-	m_minCalculated(1), 
-	m_maxSsThresh(100)
+	m_cWndInSegments (0),
+	m_firstPacketInPair (true),
+	m_maxSsThresh(100),
+	m_firstSample (true),
+	m_isStart(true)
+	
 	
 {
   NS_LOG_FUNCTION (this);
@@ -148,14 +156,15 @@ TcpNewReno::LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 {
   NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-  if (segmentsAcked >= 1)
+ if (segmentsAcked >= 1)
     {
       int k;
       k = (int)(tcb->m_cWnd/(double)(0.5*m_maxSsThresh*tcb->m_segmentSize));
+      NS_LOG_INFO ("k = " << k);
       tcb->m_cWnd += (int)(tcb->m_segmentSize/k);
-      NS_LOG_INFO ("In LimitedSlowStart, updated to cwnd " << tcb->m_cWnd << " ssthresh " << tcb->m_ssThresh);
+      NS_LOG_INFO ("In LimitedSlowStart, updated to cwnd " << (int)(tcb->m_cWnd/tcb->m_segmentSize) << " ssthresh " << (int)(tcb->m_ssThresh/tcb->m_segmentSize));
       return segmentsAcked - 1;
-    }
+	}
 
   return 0;
 }
@@ -167,15 +176,15 @@ TcpNewReno::CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 
   if (segmentsAcked >= 1)
     {
-      m_cWndInSegments = tcb->GetCwndInSegments ();
-      if(m_cWndInSegments < 100)
-      {
-	     return SlowStart(tcb, segmentsAcked);
+      if (((tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize) && (tcb->m_cWnd < tcb->m_ssThresh))|| ((tcb->m_ssThresh < m_maxSsThresh*tcb->m_segmentSize)&& (tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize ) && (tcb->m_cWnd < tcb->m_ssThresh)))
+	  {
+		  NS_LOG_INFO ("Entering Slow Start");
+		   return TcpNewReno::SlowStart (tcb, segmentsAcked);
 	  }
-	  else
+	  else if (m_maxSsThresh*tcb->m_segmentSize < tcb->m_cWnd && tcb->m_cWnd < tcb->m_ssThresh)
 	  {
 		//return LimitedSlowStart(tcb, segmentsAcked);
-		if(m_bottleneckBandwidth > 0.1*m_senderBandwidth) //Capacity exapnsion scenario
+		if(uint64_t(m_bottleneckBandwidth) > 0.1*m_senderBandwidth.GetBitRate()) //Capacity exapnsion scenario
 		{
 			return SlowStart(tcb, segmentsAcked);
 		}
@@ -196,99 +205,86 @@ TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
 {
 	NS_LOG_FUNCTION (this << tcb << segmentsAcked << rtt);
 	m_cWndInSegments = tcb->GetCwndInSegments ();
-	m_firstSample1 = 0;
-	m_firstSample2 = 0;
 
-	if(m_cWndInSegments == 2 || m_cWndInSegments == 4 || m_cWndInSegments == 8 || m_cWndInSegments == 16 || m_cWndInSegments == 32 || m_cWndInSegments == 64)
+	if(m_cWndInSegments < 90)
 	{
-		m_sample1 = SequenceNumber32 (tcb->m_nextTxSequence);
-		if(m_cWndInSegments == 2)
-		{
-			m_firstSample1 = 1;
-			
-		}
-
-		
-	}
-
-	else if(m_cWndInSegments == 3 || m_cWndInSegments == 5 || m_cWndInSegments == 9 || m_cWndInSegments == 17 || m_cWndInSegments == 33 || m_cWndInSegments == 65)
-	{
-		m_sample2 = SequenceNumber32(tcb->m_nextTxSequence);
-		if(m_cWndInSegments == 3)
-		{
-			m_firstSample2 = 1;
-			m_minCalculated = 1;
-		}
-		m_minCalculated = 0;
-	}
-	
-
-	else if(tcb->m_lastAckedSeq == m_sample1)
-	{
-		m_sampleRtt1 = rtt;
-		
-		if(m_firstSample1 == 1)
-		{
-			m_minRtt1 = m_sampleRtt1;
-			m_candidateRtt1 = m_sampleRtt1;
-		}
-	}
-
-	else if(tcb->m_lastAckedSeq == m_sample2)
-	{
-		m_sampleRtt2 = rtt;
-		
-		if(m_firstSample2 == 1)
-		{
-			m_minRtt2 = m_sampleRtt2;
-			m_candidateRtt2 = m_sampleRtt2;
-		}
-	}
-	
-
-	
-	else if(m_minCalculated == 0) //Finding the best sample set so far.
-	{
-		m_minCalculated = 1;
-		if(m_sampleRtt1 <= m_minRtt1)
-		{
-			if(m_sampleRtt1 == m_minRtt1)
-			{
-				if(m_sampleRtt2 < m_minRtt2)
+		if (m_isStart)
+		  {
+			  m_maxSent = tcb->m_highTxMark;
+			  m_isStart = false;
+		  }
+		else
+		  {
+			  if (m_firstPacketInPair)
 				{
-					m_candidateRtt2 = m_sampleRtt2;
-					m_minRtt2 = m_sampleRtt2;
+					if (tcb->m_lastAckedSeq > m_maxSent)
+					{
+						//This is first packet of packet pair
+						
+						if(m_firstSample)   //Checking if this is first sample
+						{
+							m_candidateRtt1 = rtt;
+							m_minRtt1 = rtt;
+						}
+						m_sampleRtt1 = rtt;
+						m_firstPacketInPair = false;
+						m_maxSent = tcb->m_highTxMark;
+					}
+				}
+			  else //Second packet in the probing packet pair
+				{
+					//this is second packet of packet pair
+					
+					if(m_firstSample)   //This is second packet of first ever sample
+						{
+							m_candidateRtt2 = rtt;
+							m_minRtt2 = rtt;
+							m_firstSample = false;
+						}
+						
+					m_sampleRtt2 = rtt;
+					m_firstPacketInPair = true;
+					
+					/* Calculation of Candidate Rtt - The best sample seen till now */
+					{
+						if(m_sampleRtt1 <= m_minRtt1)
+						{
+							if(m_sampleRtt1 == m_minRtt1)
+							{
+								if(m_sampleRtt2 < m_minRtt2)
+								{
+									m_candidateRtt2 = m_sampleRtt2;
+									m_minRtt2 = m_sampleRtt2;
+								}
+							}
+							else //(m_sampleRtt1 < m_minRtt1)
+							{
+								m_candidateRtt1 = m_sampleRtt1;
+								m_candidateRtt2 = m_sampleRtt2;
+								m_minRtt1 = m_sampleRtt1;
+
+								if(m_sampleRtt2 < m_minRtt2)
+								{
+									m_minRtt2 = m_sampleRtt2;
+								}
+							}
+						}
+						else //(m_sampleRtt1 > m_minRtt1)
+						{
+							if(m_sampleRtt2 < m_minRtt2)
+							{
+								m_minRtt2 = m_sampleRtt2;
+							}
+						}
+					}
 				}
 			}
-			else //(m_sampleRtt1 < m_minRtt1)
-			{
-				m_candidateRtt1 = m_sampleRtt1;
-				m_candidateRtt2 = m_sampleRtt2;
-				m_minRtt1 = m_sampleRtt1;
-
-				if(m_sampleRtt2 < m_minRtt2)
-				{
-					m_minRtt2 = m_sampleRtt2;
-				}
-			}
 		}
-		else //(m_sampleRtt1 > m_minRtt1)
+		else if(m_cWndInSegments == 90)
 		{
-			if(m_sampleRtt2 < m_minRtt2)
-			{
-				m_minRtt2 = m_sampleRtt2;
-			}
+			m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
+			m_bottleneckBandwidth = (tcb->m_segmentSize*8)/m_dispersion; //in bits/s
 		}
-	}
-	
-	else if(m_cWndInSegments == 90)
-	{
-		m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
-		m_bottleneckBandwidth = tcb->m_segmentSize/m_dispersion; //in bytes/s
-	}
-	
-	
-	NS_LOG_LOGIC (m_sample1 << m_sample2);
 }
 
 /**
@@ -328,31 +324,18 @@ TcpNewReno::CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked
 void
 TcpNewReno::IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 {
-  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
+ NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-  if (tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize )
+
+  if (tcb->m_cWnd < tcb->m_ssThresh)
     {
-      segmentsAcked = SlowStart (tcb, segmentsAcked);
-    }
-  if (m_maxSsThresh*tcb->m_segmentSize < tcb->m_cWnd && tcb->m_cWnd <= tcb->m_ssThresh)
-    {
-      segmentsAcked = LimitedSlowStart (tcb, segmentsAcked);
+      segmentsAcked = CapStart (tcb, segmentsAcked);
     }
 
   if (tcb->m_cWnd >= tcb->m_ssThresh)
     {
       CongestionAvoidance (tcb, segmentsAcked);
-    }  
-
-
-  /* At this point, we could have segmentsAcked != 0. This because RFC says
-   * that in slow start, we should increase cWnd by min (N, SMSS); if in
-   * slow start we receive a cumulative ACK, it counts only for 1 SMSS of
-   * increase, wasting the others.
-   *
-   * // Uncorrect assert, I am sorry
-   * NS_ASSERT (segmentsAcked == 0);
-   */
+    }
 }
 
 
