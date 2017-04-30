@@ -16,213 +16,351 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
-#ifndef TCPCONGESTIONOPS_H
-#define TCPCONGESTIONOPS_H
 
-#include "ns3/object.h"
-#include "ns3/timer.h"
-#include "ns3/tcp-socket-base.h"
-#include "build/ns3/sequence-number.h"
+#include "tcp-congestion-ops.h"
+#include "tcp-socket-base.h"
+#include "ns3/log.h"
 
 namespace ns3 {
 
-/**
- * \ingroup tcp
- * \defgroup congestionOps Congestion Control Algorithms.
- *
- * The various congestion control algorithms, also known as "TCP flavors".
- */
+NS_LOG_COMPONENT_DEFINE ("TcpCongestionOps");
 
-/**
- * \ingroup congestionOps
- *
- * \brief Congestion control abstract class
- *
- * The design is inspired on what Linux v4.0 does (but it has been
- * in place since years). The congestion control is splitted from the main
- * socket code, and it is a pluggable component. An interface has been defined;
- * variables are maintained in the TcpSocketState class, while subclasses of
- * TcpCongestionOps operate over an instance of that class.
- *
- * Only three methods has been utilized right now; however, Linux has many others,
- * which can be added later in ns-3.
- *
- * \see IncreaseWindow
- * \see PktsAcked
- */
-class TcpCongestionOps : public Object
+NS_OBJECT_ENSURE_REGISTERED (TcpCongestionOps);
+
+TypeId
+TcpCongestionOps::GetTypeId (void)
 {
-public:
-  /**
-   * \brief Get the type ID.
-   * \return the object TypeId
-   */
-  static TypeId GetTypeId (void);
+  static TypeId tid = TypeId ("ns3::TcpCongestionOps")
+    .SetParent<Object> ()
+    .SetGroupName ("Internet")
+  ;
+  return tid;
+}
 
-  TcpCongestionOps ();
+TcpCongestionOps::TcpCongestionOps () : Object ()
+{
+}
 
-  /**
-   * \brief Copy constructor.
-   * \param other object to copy.
-   */
-  TcpCongestionOps (const TcpCongestionOps &other);
+TcpCongestionOps::TcpCongestionOps (const TcpCongestionOps &other) : Object (other)
+{
+}
 
-  virtual ~TcpCongestionOps ();
-
-  /**
-   * \brief Get the name of the congestion control algorithm
-   *
-   * \return A string identifying the name
-   */
-  virtual std::string GetName () const = 0;
-
-  /**
-   * \brief Get the slow start threshold after a loss event
-   *
-   * Is guaranteed that the congestion control state (TcpAckState_t) is
-   * changed BEFORE the invocation of this method.
-   * The implementator should return the slow start threshold (and not change
-   * it directly) because, in the future, the TCP implementation may require to
-   * instantly recover from a loss event (e.g. when there is a network with an high
-   * reordering factor).
-   *
-   * \param tcb internal congestion state
-   * \param bytesInFlight total bytes in flight
-   * \return Slow start threshold
-   */
-  virtual uint32_t GetSsThresh (Ptr<const TcpSocketState> tcb,
-                                uint32_t bytesInFlight) = 0;
-
-  /**
-   * \brief Congestion avoidance algorithm implementation
-   *
-   * Mimic the function cong_avoid in Linux. New segments have been ACKed,
-   * and the congestion control duty is to set
-   *
-   * The function is allowed to change directly cWnd and/or ssThresh.
-   *
-   * \param tcb internal congestion state
-   * \param segmentsAcked count of segments acked
-   */
-  virtual void IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked) = 0;
-
-  /**
-   * \brief Timing information on received ACK
-   *
-   * The function is called every time an ACK is received (only one time
-   * also for cumulative ACKs) and contains timing information. It is
-   * optional (congestion controls can not implement it) and the default
-   * implementation does nothing.
-   *
-   * \param tcb internal congestion state
-   * \param segmentsAcked count of segments acked
-   * \param rtt last rtt
-   */
-  virtual void PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
-                          const Time& rtt)
-  {
-  }
+TcpCongestionOps::~TcpCongestionOps ()
+{
+}
 
 
-  /**
-   * \brief Trigger events/calculations specific to a congestion state
-   *
-   * This function mimics the function set_state in Linux.
-   * The function is called before changing congestion state.
-   *
-   * \param tcb internal congestion state
-   * \param newState new congestion state to which the TCP is going to switch
-   */
-  virtual void CongestionStateSet (Ptr<TcpSocketState> tcb,
-                                   const TcpSocketState::TcpCongState_t newState)
-  {
-  }
+// RENO
 
-  // Present in Linux but not in ns-3 yet:
-  /* call when cwnd event occurs (optional) */
-  // void (*cwnd_event)(struct sock *sk, enum tcp_ca_event ev);
-  /* call when ack arrives (optional) */
-  // void (*in_ack_event)(struct sock *sk, u32 flags);
-  /* new value of cwnd after loss (optional) */
-  // u32  (*undo_cwnd)(struct sock *sk);
-  /* hook for packet ack accounting (optional) */
-  // void (*pkts_acked)(struct sock *sk, u32 num_acked, s32 rtt_us);
+NS_OBJECT_ENSURE_REGISTERED (TcpNewReno);
 
-  /**
-   * \brief Copy the congestion control algorithm across socket
-   *
-   * \return a pointer of the copied object
-   */
-  virtual Ptr<TcpCongestionOps> Fork () = 0;
-};
+TypeId
+TcpNewReno::GetTypeId (void)
+{
+  static TypeId tid = TypeId ("ns3::TcpNewReno")
+    .SetParent<TcpCongestionOps> ()
+    .SetGroupName ("Internet")
+    .AddConstructor<TcpNewReno> ()
+    .AddAttribute ("DataRate",
+                   "The sender bandwidth",
+                   DataRateValue (DataRate ("5Mbps")),
+                   MakeDataRateAccessor (&TcpNewReno::m_senderBandwidth),
+                   MakeDataRateChecker ())
+  ;
+  return tid;
+}
+
+TcpNewReno::TcpNewReno (void) : TcpCongestionOps (),
+	m_cWndInSegments (0),
+	m_firstPacketInPair (true),
+	m_maxSsThresh(100),
+	m_firstSample (true),
+	m_isStart(true),
+	m_bottleneckCalculated (0)
+
+
+{
+  NS_LOG_FUNCTION (this);
+}
+
+TcpNewReno::TcpNewReno (const TcpNewReno& sock)
+  : TcpCongestionOps (sock),
+  m_maxSsThresh (sock.m_maxSsThresh)
+
+{
+  NS_LOG_FUNCTION (this);
+}
+
+TcpNewReno::~TcpNewReno (void)
+{
+}
 
 /**
- * \brief The NewReno implementation
+ * \brief Tcp NewReno slow start algorithm
  *
- * New Reno introduces partial ACKs inside the well-established Reno algorithm.
- * This and other modifications are described in RFC 6582.
+ * Defined in RFC 5681 as
  *
- * \see IncreaseWindow
+ * > During slow start, a TCP increments cwnd by at most SMSS bytes for
+ * > each ACK received that cumulatively acknowledges new data.  Slow
+ * > start ends when cwnd exceeds ssthresh (or, optionally, when it
+ * > reaches it, as noted above) or when congestion is observed.  While
+ * > traditionally TCP implementations have increased cwnd by precisely
+ * > SMSS bytes upon receipt of an ACK covering new data, we RECOMMEND
+ * > that TCP implementations increase cwnd, per:
+ * >
+ * >    cwnd += min (N, SMSS)                      (2)
+ * >
+ * > where N is the number of previously unacknowledged bytes acknowledged
+ * > in the incoming ACK.
+ *
+ * The ns-3 implementation respect the RFC definition. Linux does something
+ * different:
+ * \verbatim
+u32 tcp_slow_start(struct tcp_sock *tp, u32 acked)
+  {
+    u32 cwnd = tp->snd_cwnd + acked;
+
+    if (cwnd > tp->snd_ssthresh)
+      cwnd = tp->snd_ssthresh + 1;
+    acked -= cwnd - tp->snd_cwnd;
+    tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
+
+    return acked;
+  }
+  \endverbatim
+ *
+ * As stated, we want to avoid the case when a cumulative ACK increases cWnd more
+ * than a segment size, but we keep count of how many segments we have ignored,
+ * and return them.
+ *
+ * \param tcb internal congestion state
+ * \param segmentsAcked count of segments acked
+ * \return the number of segments not considered for increasing the cWnd
  */
-class TcpNewReno : public TcpCongestionOps
+uint32_t
+TcpNewReno::SlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 {
-public:
-  /**
-   * \brief Get the type ID.
-   * \return the object TypeId
-   */
-  static TypeId GetTypeId (void);
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-  TcpNewReno ();
+  if (segmentsAcked >= 1)
+    {
+      tcb->m_cWnd += tcb->m_segmentSize;
+      NS_LOG_INFO ("In SlowStart, updated to cwnd " << tcb->m_cWnd << " ssthresh " << tcb->m_ssThresh);
+      return segmentsAcked - 1;
+    }
 
-  /**
-   * \brief Copy constructor.
-   * \param sock object to copy.
-   */
-  TcpNewReno (const TcpNewReno& sock);
+  return 0;
+}
 
-  ~TcpNewReno ();
+uint32_t
+TcpNewReno::LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-  std::string GetName () const;
+ if (segmentsAcked >= 1)
+    {
+      int k;
+      k = (int)(tcb->m_cWnd/(double)(0.5*m_maxSsThresh*tcb->m_segmentSize));
+      NS_LOG_INFO ("k = " << k);
+      tcb->m_cWnd += (int)(tcb->m_segmentSize/k);
+      NS_LOG_INFO ("In LimitedSlowStart, updated to cwnd " << (int)(tcb->m_cWnd/tcb->m_segmentSize) << " ssthresh " << (int)(tcb->m_ssThresh/tcb->m_segmentSize));
+      return segmentsAcked - 1;
+	}
 
-  virtual void IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  virtual uint32_t GetSsThresh (Ptr<const TcpSocketState> tcb,
-                                uint32_t bytesInFlight);
+  return 0;
+}
 
-  virtual Ptr<TcpCongestionOps> Fork ();
-  virtual void PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked, const Time& rtt);
+uint32_t
+TcpNewReno::CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
 
-protected:
-  virtual uint32_t SlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  virtual uint32_t CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  virtual uint32_t LimitedSlowStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  virtual void CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked);
-  
-  
- 
-  
-private:
-  double m_senderBandwidth;
-  double m_bottleneckBandwidth;
-  double m_dispersion;
-  Time m_sampleRtt1;
-  Time m_sampleRtt2;
-  Time m_minRtt1;
-  Time m_minRtt2;
-  Time m_candidateRtt1;
-  Time m_candidateRtt2;
-  SequenceNumber32 m_sample1;
-  SequenceNumber32 m_sample2;
-  int m_firstPacketPair;
-  int m_cWndInSegments;
-  int m_minCalculated;
-  int m_firstSample1;
-  int m_firstSample2;
-  int m_maxSsThresh;
-  
-  
-};
+  if (segmentsAcked >= 1)
+    {
+      if (((tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize) && (tcb->m_cWnd < tcb->m_ssThresh))|| ((tcb->m_ssThresh < m_maxSsThresh*tcb->m_segmentSize)&& (tcb->m_cWnd <= m_maxSsThresh*tcb->m_segmentSize ) && (tcb->m_cWnd < tcb->m_ssThresh)))
+	  {
+		  NS_LOG_INFO ("Entering Slow Start");
+		   return TcpNewReno::SlowStart (tcb, segmentsAcked);
+	  }
+	  else if (m_maxSsThresh*tcb->m_segmentSize < tcb->m_cWnd && tcb->m_cWnd < tcb->m_ssThresh)
+	  {
+		//return LimitedSlowStart(tcb, segmentsAcked);
+		if(uint64_t(m_bottleneckBandwidth) > 0.1*m_senderBandwidth.GetBitRate()) //Capacity exapnsion scenario
+		{
+			return SlowStart(tcb, segmentsAcked);
+		}
+
+		else //(m_bottleneckBandwidth < 0.1*senderBandwidth) //Capacity reduction scenario
+		{
+			return LimitedSlowStart(tcb, segmentsAcked);
+		}
+	  }
+    }
+
+  return 0;
+}
+
+void
+TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
+                     const Time& rtt)
+{
+	NS_LOG_FUNCTION (this << tcb << segmentsAcked << rtt);
+	m_cWndInSegments = tcb->GetCwndInSegments ();
+
+	if(m_cWndInSegments < 90)
+	{
+		if (m_isStart)
+		  {
+			  m_maxSent = tcb->m_highTxMark;
+			  m_isStart = false;
+		  }
+		else
+		  {
+			  if (m_firstPacketInPair)
+				{
+					if (tcb->m_lastAckedSeq > m_maxSent)
+					{
+						//This is first packet of packet pair
+
+						if(m_firstSample)   //Checking if this is first sample
+						{
+							m_candidateRtt1 = rtt;
+							m_minRtt1 = rtt;
+						}
+						m_sampleRtt1 = rtt;
+						m_firstPacketInPair = false;
+						m_maxSent = tcb->m_highTxMark;
+					}
+				}
+			  else //Second packet in the probing packet pair
+				{
+					//this is second packet of packet pair
+
+					if(m_firstSample)   //This is second packet of first ever sample
+						{
+							m_candidateRtt2 = rtt;
+							m_minRtt2 = rtt;
+							m_firstSample = false;
+						}
+
+					m_sampleRtt2 = rtt;
+					m_firstPacketInPair = true;
+
+					/* Calculation of Candidate Rtt - The best sample seen till now */
+					{
+						if(m_sampleRtt1 <= m_minRtt1)
+						{
+							if(m_sampleRtt1 == m_minRtt1)
+							{
+								if(m_sampleRtt2 < m_minRtt2)
+								{
+									m_candidateRtt2 = m_sampleRtt2;
+									m_minRtt2 = m_sampleRtt2;
+								}
+							}
+							else //(m_sampleRtt1 < m_minRtt1)
+							{
+								m_candidateRtt1 = m_sampleRtt1;
+								m_candidateRtt2 = m_sampleRtt2;
+								m_minRtt1 = m_sampleRtt1;
+
+								if(m_sampleRtt2 < m_minRtt2)
+								{
+									m_minRtt2 = m_sampleRtt2;
+								}
+							}
+						}
+						else //(m_sampleRtt1 > m_minRtt1)
+						{
+							if(m_sampleRtt2 < m_minRtt2)
+							{
+								m_minRtt2 = m_sampleRtt2;
+							}
+						}
+					}
+				}
+			}
+		}
+		else if(m_cWndInSegments > 64 && m_cWndInSegments < 90 && m_bottleneckCalculated==0)
+		{
+			m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
+			m_bottleneckBandwidth = (tcb->m_segmentSize*8)/m_dispersion; //in bits/s
+			m_bottleneckCalculated = 1;
+		}
+}
+
+/**
+ * \brief NewReno congestion avoidance
+ *
+ * During congestion avoidance, cwnd is incremented by roughly 1 full-sized
+ * segment per round-trip time (RTT).
+ *
+ * \param tcb internal congestion state
+ * \param segmentsAcked count of segments acked
+ */
+void
+TcpNewReno::CongestionAvoidance (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+  NS_LOG_FUNCTION (this << tcb << segmentsAcked);
+
+  if (segmentsAcked > 0)
+    {
+      double adder = static_cast<double> (tcb->m_segmentSize * tcb->m_segmentSize) / tcb->m_cWnd.Get ();
+      adder = std::max (1.0, adder);
+      tcb->m_cWnd += static_cast<uint32_t> (adder);
+      NS_LOG_INFO ("In CongAvoid, updated to cwnd " << tcb->m_cWnd <<
+                   " ssthresh " << tcb->m_ssThresh);
+    }
+}
+
+/**
+ * \brief Try to increase the cWnd following the NewReno specification
+ *
+ * \see SlowStart
+ * \see CongestionAvoidance
+ *
+ * \param tcb internal congestion state
+ * \param segmentsAcked count of segments acked
+ */
+
+void
+TcpNewReno::IncreaseWindow (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
+{
+ NS_LOG_FUNCTION (this << tcb << segmentsAcked);
+
+
+  if (tcb->m_cWnd < tcb->m_ssThresh)
+    {
+      segmentsAcked = CapStart (tcb, segmentsAcked);
+    }
+
+  if (tcb->m_cWnd >= tcb->m_ssThresh)
+    {
+      CongestionAvoidance (tcb, segmentsAcked);
+    }
+}
+
+
+
+std::string
+TcpNewReno::GetName () const
+{
+  return "TcpNewReno";
+}
+
+uint32_t
+TcpNewReno::GetSsThresh (Ptr<const TcpSocketState> state,
+                         uint32_t bytesInFlight)
+{
+  NS_LOG_FUNCTION (this << state << bytesInFlight);
+
+  return std::max (2 * state->m_segmentSize, bytesInFlight / 2);
+}
+
+Ptr<TcpCongestionOps>
+TcpNewReno::Fork ()
+{
+  return CopyObject<TcpNewReno> (this);
+}
 
 } // namespace ns3
-
-#endif // TCPCONGESTIONOPS_H

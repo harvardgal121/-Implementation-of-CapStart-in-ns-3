@@ -16,7 +16,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
- 
+
 #include "tcp-congestion-ops.h"
 #include "tcp-socket-base.h"
 #include "ns3/log.h"
@@ -61,7 +61,7 @@ TcpNewReno::GetTypeId (void)
     .SetParent<TcpCongestionOps> ()
     .SetGroupName ("Internet")
     .AddConstructor<TcpNewReno> ()
-    .AddAttribute ("DataRate", 
+    .AddAttribute ("DataRate",
                    "The sender bandwidth",
                    DataRateValue (DataRate ("5Mbps")),
                    MakeDataRateAccessor (&TcpNewReno::m_senderBandwidth),
@@ -75,9 +75,10 @@ TcpNewReno::TcpNewReno (void) : TcpCongestionOps (),
 	m_firstPacketInPair (true),
 	m_maxSsThresh(100),
 	m_firstSample (true),
-	m_isStart(true)
-	
-	
+	m_isStart(true),
+	m_bottleneckCalculated (0)
+
+
 {
   NS_LOG_FUNCTION (this);
 }
@@ -188,7 +189,7 @@ TcpNewReno::CapStart (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked)
 		{
 			return SlowStart(tcb, segmentsAcked);
 		}
-		
+
 		else //(m_bottleneckBandwidth < 0.1*senderBandwidth) //Capacity reduction scenario
 		{
 			return LimitedSlowStart(tcb, segmentsAcked);
@@ -220,7 +221,7 @@ TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
 					if (tcb->m_lastAckedSeq > m_maxSent)
 					{
 						//This is first packet of packet pair
-						
+
 						if(m_firstSample)   //Checking if this is first sample
 						{
 							m_candidateRtt1 = rtt;
@@ -234,17 +235,17 @@ TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
 			  else //Second packet in the probing packet pair
 				{
 					//this is second packet of packet pair
-					
+
 					if(m_firstSample)   //This is second packet of first ever sample
 						{
 							m_candidateRtt2 = rtt;
 							m_minRtt2 = rtt;
 							m_firstSample = false;
 						}
-						
+
 					m_sampleRtt2 = rtt;
 					m_firstPacketInPair = true;
-					
+
 					/* Calculation of Candidate Rtt - The best sample seen till now */
 					{
 						if(m_sampleRtt1 <= m_minRtt1)
@@ -280,10 +281,11 @@ TcpNewReno::PktsAcked (Ptr<TcpSocketState> tcb, uint32_t segmentsAcked,
 				}
 			}
 		}
-		else if(m_cWndInSegments == 90)
+		else if(m_cWndInSegments > 64 && m_cWndInSegments < 90 && m_bottleneckCalculated==0)
 		{
 			m_dispersion = m_candidateRtt2.GetDouble() - m_candidateRtt1.GetDouble();
 			m_bottleneckBandwidth = (tcb->m_segmentSize*8)/m_dispersion; //in bits/s
+			m_bottleneckCalculated = 1;
 		}
 }
 
